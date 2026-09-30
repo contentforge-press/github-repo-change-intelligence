@@ -26,6 +26,10 @@ export function renderHome() {
 <label class="muted">Try free — owner/repo</label>
 <div class="row"><input id="t" value="facebook/react"><button onclick="run()">Get snapshot</button></div>
 <pre id="out">// result</pre>
+<div id="up" style="display:none;border-color:var(--acc);background:linear-gradient(180deg,rgba(91,140,255,.10),var(--card))">
+<b>That's the current state.</b><p class="muted">A <code>$0.05</code> changes call shows exactly what's new since your last check — releases, stars, issues. Watching it continuously with alerts starts at $99/month.</p>
+<div class="row"><a href="/pricing"><button type="button">See plans</button></a></div>
+</div>
 </div>
 <div class="grid">
 <div class="card"><b>Free</b><p class="muted">Stars, issues, last push, releases</p><code>/v1/snapshot</code></div>
@@ -40,7 +44,7 @@ export function renderHome() {
 <p class="muted"><a href="/pricing">pricing</a> · <a href="/dashboard">dashboard</a> · <a href="/health">health</a> · <a href="/terms">terms</a> · <a href="/privacy">privacy</a> · <a href="/contact">contact</a></p>
 <script>
 async function run(){const o=document.getElementById('out');o.textContent='loading…';
- try{const r=await fetch('/v1/snapshot?target='+encodeURIComponent(document.getElementById('t').value));o.textContent=JSON.stringify(await r.json(),null,2);}
+ try{const r=await fetch('/v1/snapshot?target='+encodeURIComponent(document.getElementById('t').value));o.textContent=JSON.stringify(await r.json(),null,2);document.getElementById('up').style.display='block';}
  catch(e){o.textContent='error '+e;}}
 </script>`);
 }
