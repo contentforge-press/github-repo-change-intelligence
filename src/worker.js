@@ -10,6 +10,7 @@ const cfg = {
     PRICE_PER_TARGET_USD: 0.03, BATCH_MAX: 50,
     PRICE_LANDSCAPE_USD: 5, LANDSCAPE_MAX: 10,
     KV_BINDING: 'INTEL_KV',
+    SHARED_BINDING: 'SHARED_KV',
     HOST: 'github-intel.contentforge-press.workers.dev',
     CONTACT_EMAIL: 'contentforge.press@outlook.com',
     ADMIN_KEY: 'ba951afdb936eecd4ffb9ddfb1b44b25f47bbab1dfc391ac',

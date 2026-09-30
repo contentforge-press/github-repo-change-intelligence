@@ -9,3 +9,7 @@ id = "ac5ba2dc8c1f45a09b399cd23becdc0b"
 
 [triggers]
 crons = ["0 8 * * *"]
+
+[[kv_namespaces]]
+binding = "SHARED_KV"
+id = "ed62f7b5d5274de686f5f699915a30a1"

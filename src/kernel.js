@@ -76,8 +76,8 @@ async function getWatch(kv, key) {
     const raw = await kv.get(`watch-${key}`);
     return raw ? JSON.parse(raw) : { targets: [], webhookUrl: '', alertEmail: '', updatedAt: null };
 }
-async function watchView(A, kv, key) {
-    const sub = await loadSub(kv, key);
+async function watchView(A, kv, key, skv) {
+    const sub = await loadSub(skv || kv, key);
     if (!sub) return { error: 'invalid_key', status: 401 };
     const wl = await getWatch(kv, key);
     return {
@@ -119,13 +119,13 @@ async function refreshWatchlist(A, cfg, kv, wl, only) {
 }
 
 async function scheduledScan(A, cfg, env) {
-    const kv = env[cfg.KV_BINDING]; let cursor, scanned = 0, refreshed = 0;
+    const kv = env[cfg.KV_BINDING]; const skv = env[cfg.SHARED_BINDING] || kv; let cursor, scanned = 0, refreshed = 0;
     do {
         const l = await kv.list({ prefix: 'watch-', cursor, limit: 100 });
         for (const it of l.keys) {
             const key = it.name.slice(6); if (!key.startsWith('sci_')) continue; scanned++;
             try {
-                const sub = await loadSub(kv, key); if (!sub || !sub.active) continue;
+                const sub = await loadSub(skv, key); if (!sub || !sub.active) continue;
                 const wl = await getWatch(kv, key); if (!wl.targets.length) continue;
                 const alerts = await refreshWatchlist(A, cfg, kv, wl);
                 await kv.put(`watch-${key}`, JSON.stringify(wl));
@@ -184,7 +184,7 @@ function createDirectOrder(plan, cfg, kv) {
     return kv.put(`order-${orderId}`, JSON.stringify(order), { expirationTtl: 5400 }).then(() => order);
 }
 
-async function checkDirectOrder(order, cfg, kv, A) {
+async function checkDirectOrder(order, cfg, kv, A, skv) {
     if (order.status === 'paid') return order;
     if (new Date(order.expiresAt).getTime() < Date.now()) { order.status = 'expired'; await kv.put(`order-${order.orderId}`, JSON.stringify(order)); return order; }
     const found = await findDirectPayment(cfg, order.amountUnits);
@@ -195,7 +195,7 @@ async function checkDirectOrder(order, cfg, kv, A) {
     const expiresAt = new Date(now + plan.days * 86400e3).toISOString();
     const accessKey = newAccessKey();
     order.accessKey = accessKey;
-    await kv.put(`sub-${accessKey}`, JSON.stringify({ accessKey, plan: plan.id, payer: found.from || '', startedAt: new Date(now).toISOString(), expiresAt, priceUsd: plan.price, source: 'direct', orderId: order.orderId }));
+    await (skv || kv).put(`sub-${accessKey}`, JSON.stringify({ accessKey, plan: plan.id, payer: found.from || '', startedAt: new Date(now).toISOString(), expiresAt, priceUsd: plan.price, source: 'direct', orderId: order.orderId }));
     await kv.put(`order-${order.orderId}`, JSON.stringify(order));
     return order;
 }
@@ -206,7 +206,7 @@ const html = (s) => new Response(s, { headers: { 'content-type': 'text/html; cha
 export function createServer(A, cfg) {
     const Plans = PLANS(A);
 
-    async function handleSubscribe(url, request, kv) {
+    async function handleSubscribe(url, request, kv, skv) {
         const plan = Plans[url.searchParams.get('plan')];
         if (!plan) return json({ error: 'invalid_plan', plans: Object.keys(Plans) }, 400);
         const origin = url.origin;
@@ -216,13 +216,13 @@ export function createServer(A, cfg) {
         const now = Date.now();
         const expiresAt = new Date(now + plan.days * 86400e3).toISOString();
         const accessKey = newAccessKey();
-        await kv.put(`sub-${accessKey}`, JSON.stringify({ accessKey, plan: plan.id, payer: pay.settlement.payer || '', startedAt: new Date(now).toISOString(), expiresAt, priceUsd: plan.price }));
+        await (skv || kv).put(`sub-${accessKey}`, JSON.stringify({ accessKey, plan: plan.id, payer: pay.settlement.payer || '', startedAt: new Date(now).toISOString(), expiresAt, priceUsd: plan.price }));
         return json({ ok: true, accessKey, plan: plan.id, expiresAt });
     }
 
-    async function watchAdd(url, request, kv) {
+    async function watchAdd(url, request, kv, skv) {
         const key = url.searchParams.get('key');
-        const sub = await loadSub(kv, key);
+        const sub = await loadSub(skv || kv, key);
         if (!sub) return json({ error: 'invalid_key' }, 401);
         if (!sub.active) return json({ error: 'subscription_expired' }, 402);
         const body = await readJson(request);
@@ -233,20 +233,20 @@ export function createServer(A, cfg) {
         if (wl.targets.some(t => t.target === parsed.handle && t.platform === parsed.platform)) return json({ error: 'already_added' }, 400);
         wl.targets.push({ target: parsed.handle, platform: parsed.platform, addedAt: new Date().toISOString(), lastChecked: null, lastChanges: [] });
         await kv.put(`watch-${key}`, JSON.stringify(wl));
-        return json(await watchView(A, kv, key));
+        return json(await watchView(A, kv, key, skv));
     }
-    async function watchRemove(url, request, kv) {
+    async function watchRemove(url, request, kv, skv) {
         const key = url.searchParams.get('key');
-        if (!(await loadSub(kv, key))) return json({ error: 'invalid_key' }, 401);
+        if (!(await loadSub(skv || kv, key))) return json({ error: 'invalid_key' }, 401);
         const body = await readJson(request);
         const wl = await getWatch(kv, key);
         wl.targets = wl.targets.filter(t => t.target !== A.safeHandle(body.target));
         await kv.put(`watch-${key}`, JSON.stringify(wl));
-        return json(await watchView(A, kv, key));
+        return json(await watchView(A, kv, key, skv));
     }
-    async function watchSettings(url, request, kv) {
+    async function watchSettings(url, request, kv, skv) {
         const key = url.searchParams.get('key');
-        if (!(await loadSub(kv, key))) return json({ error: 'invalid_key' }, 401);
+        if (!(await loadSub(skv || kv, key))) return json({ error: 'invalid_key' }, 401);
         const body = await readJson(request);
         const webhookUrl = (body.webhookUrl || '').trim().slice(0, 500);
         const alertEmail = (body.alertEmail || '').trim().slice(0, 200);
@@ -255,11 +255,11 @@ export function createServer(A, cfg) {
         const wl = await getWatch(kv, key);
         wl.webhookUrl = webhookUrl; wl.alertEmail = alertEmail;
         await kv.put(`watch-${key}`, JSON.stringify(wl));
-        return json(await watchView(A, kv, key));
+        return json(await watchView(A, kv, key, skv));
     }
-    async function watchRefresh(url, request, kv) {
+    async function watchRefresh(url, request, kv, skv) {
         const key = url.searchParams.get('key');
-        const sub = await loadSub(kv, key);
+        const sub = await loadSub(skv || kv, key);
         if (!sub) return json({ error: 'invalid_key' }, 401);
         if (!sub.active) return json({ error: 'subscription_expired' }, 402);
         const wl = await getWatch(kv, key);
@@ -267,7 +267,7 @@ export function createServer(A, cfg) {
         const alerts = await refreshWatchlist(A, cfg, kv, wl, only);
         await kv.put(`watch-${key}`, JSON.stringify(wl));
         await dispatchAlerts(A, cfg, wl, alerts);
-        return json(await watchView(A, kv, key));
+        return json(await watchView(A, kv, key, skv));
     }
 
     // ---- MCP ----
@@ -302,6 +302,7 @@ export function createServer(A, cfg) {
     async function handle(request, env) {
         const url = new URL(request.url); const p = url.pathname;
         const kv = env[cfg.KV_BINDING];
+        const skv = env[cfg.SHARED_BINDING] || kv;
 
         if (p === '/') return html(A.renderHome());
         if (p === '/pricing') return html(A.renderPricing(Plans));
@@ -321,7 +322,7 @@ export function createServer(A, cfg) {
             const t = A.parseTarget(url.searchParams.get('target')); if (!t) return json({ error: 'invalid_target' }, 400);
             return json(await A.snapshot(t));
         }
-        if (p === '/v1/subscribe') return handleSubscribe(url, request, kv);
+        if (p === '/v1/subscribe') return handleSubscribe(url, request, kv, skv);
         // ---- Human direct-pay（无需x402钱包）----
         if (p === '/v1/order') {
             const plan = Plans[url.searchParams.get('plan')];
@@ -333,13 +334,13 @@ export function createServer(A, cfg) {
             const id = url.searchParams.get('id');
             const raw = id ? await kv.get(`order-${id}`) : null;
             if (!raw) return json({ error: 'order_not_found' }, 404);
-            return json(await checkDirectOrder(JSON.parse(raw), cfg, kv, A));
+            return json(await checkDirectOrder(JSON.parse(raw), cfg, kv, A, skv));
         }
-        if (p === '/v1/watch') return json(await watchView(A, kv, url.searchParams.get('key')));
-        if (p === '/v1/watch/add') return watchAdd(url, request, kv);
-        if (p === '/v1/watch/remove') return watchRemove(url, request, kv);
-        if (p === '/v1/watch/settings') return watchSettings(url, request, kv);
-        if (p === '/v1/watch/refresh') return watchRefresh(url, request, kv);
+        if (p === '/v1/watch') return json(await watchView(A, kv, url.searchParams.get('key'), skv));
+        if (p === '/v1/watch/add') return watchAdd(url, request, kv, skv);
+        if (p === '/v1/watch/remove') return watchRemove(url, request, kv, skv);
+        if (p === '/v1/watch/settings') return watchSettings(url, request, kv, skv);
+        if (p === '/v1/watch/refresh') return watchRefresh(url, request, kv, skv);
         if (p === '/v1/admin/stats') {
             if ((request.headers.get('x-admin-key') || url.searchParams.get('key')) !== cfg.ADMIN_KEY) return json({ error: 'forbidden' }, 403);
             return json({ ok: true });
