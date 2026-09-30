@@ -41,7 +41,7 @@ export function renderHome() {
 <b>Continuous repository intelligence?</b><p class="muted">Watch dependencies and projects, get alerted on new releases. From <b>$99/month</b>, USDC, instant key.</p>
 <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"><a href="/pricing"><button type="button">See plans</button></a><a href="/dashboard"><button type="button" class="ghost">Dashboard</button></a></div>
 </div>
-<p class="muted"><a href="/pricing">pricing</a> · <a href="/dashboard">dashboard</a> · <a href="/health">health</a> · <a href="/terms">terms</a> · <a href="/privacy">privacy</a> · <a href="/contact">contact</a></p>
+<p class="muted"><a href="/pricing">pricing</a> · <a href="/dashboard">dashboard</a> · <a href="/status">status</a> · <a href="/health">health</a> · <a href="/terms">terms</a> · <a href="/privacy">privacy</a> · <a href="/contact">contact</a></p>
 <script>
 async function run(){const o=document.getElementById('out');o.textContent='loading…';
  try{const r=await fetch('/v1/snapshot?target='+encodeURIComponent(document.getElementById('t').value));o.textContent=JSON.stringify(await r.json(),null,2);document.getElementById('up').style.display='block';}
@@ -119,6 +119,36 @@ function rm(x){post('/v1/watch/remove?key='+encodeURIComponent(st.accessKey),{ta
 function refreshOne(x){fetch('/v1/watch/refresh?key='+encodeURIComponent(st.accessKey)+'&target='+encodeURIComponent(x)).then(r=>r.json()).then(d=>{if(!d.error){st=d;render();}});}
 function refreshAll(){$('rb').textContent='…';fetch('/v1/watch/refresh?key='+encodeURIComponent(st.accessKey)).then(r=>r.json()).then(d=>{if(!d.error){st=d;render();}}).finally(()=>$('rb').textContent='Refresh all');}
 function saveS(){post('/v1/watch/settings?key='+encodeURIComponent(st.accessKey),{webhookUrl:$('wh').value.trim(),alertEmail:$('em').value.trim()}).then(()=>alert('Saved'));}
+</script>`);
+}
+
+export function renderStatus(name, probeTarget) {
+    return shell('Status · ' + name, `
+<h1>System status</h1><p class="sub">Live checks run from your browser. <a href="/">Home</a></p>
+<div id="rows" class="card"></div>
+<p class="muted" id="updated"></p>
+<script>
+const checks=[
+ ['API','/health'],
+ ['Snapshot (data source)','/v1/snapshot?target='+encodeURIComponent(${JSON.stringify(probeTarget)})],
+ ['MCP endpoint','/mcp'],
+ ['Docs','/docs'],
+];
+async function probe([label,u]){
+ const t0=performance.now();let ok=false,code='',ms=0;
+ try{const c=new AbortController();setTimeout(()=>c.abort(),8000);
+  const r=await fetch(u,{method:'GET',signal:c.signal});code=r.status;ms=Math.round(performance.now()-t0);
+  ok=r.status===200||r.status===400||r.status===405||r.status===402||r.status===406;}
+ catch(e){code='ERR';}
+ return {label,ok,code,ms};
+}
+(async()=>{
+ const res=await Promise.all(checks.map(probe));
+ document.getElementById('rows').innerHTML=res.map(x=>
+  '<div class="row" style="justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.05)">'+
+  '<span>'+x.label+'</span><span style="color:'+(x.ok?'#56d364':'#ff7b72')+'">'+(x.ok?'● Operational':'● Down')+' <span class="muted">'+x.code+(x.ms?' · '+x.ms+'ms':'')+'</span></span></div>').join('');
+ document.getElementById('updated').textContent='Updated '+new Date().toUTCString();
+})();
 </script>`);
 }
 

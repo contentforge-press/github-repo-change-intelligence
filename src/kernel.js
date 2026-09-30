@@ -308,6 +308,7 @@ export function createServer(A, cfg) {
         if (p === '/pricing') return html(A.renderPricing(Plans));
         if (p === '/dashboard') return html(A.renderDashboard());
         if (p === '/health') return json({ ok: true });
+        if (p === '/status') return html(A.renderStatus(cfg.TITLE || cfg.NAME, cfg.STATUS_TARGET || A.STATUS_TARGET || ''));
         if (p === '/llms.txt') return new Response(A.llmsTxt(cfg), { headers: { 'content-type': 'text/plain' } });
         if (p === '/docs') return new Response(A.docsMd(cfg), { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
         if (p === '/robots.txt') return new Response('User-agent: *\nAllow: /\n', { headers: { 'content-type': 'text/plain' } });

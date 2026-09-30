@@ -1,6 +1,6 @@
 // GitHub Repo Change Intelligence —— 适配器（GitHub 平台）
 // 监控公开 GitHub 仓库的：release、star/issue 数、最近推送/提交活动。
-import { renderHome, renderPricing, renderDashboard, renderLegal } from './pages.js';
+import { renderHome, renderPricing, renderDashboard, renderLegal, renderStatus } from './pages.js';
 
 const ID = 'github-intel';
 const TITLE = 'GitHub Repo Change Intelligence';
@@ -176,5 +176,6 @@ export const adapter = {
         pricing: { changes: c.PRICE_CHANGES_USD, intel: c.PRICE_INTEL_USD, batchPerRepo: c.PRICE_PER_TARGET_USD, landscape: c.PRICE_LANDSCAPE_USD },
     }),
 
-    renderHome, renderPricing, renderDashboard, renderLegal,
+    STATUS_TARGET: 'facebook/react',
+    renderStatus, renderHome, renderPricing, renderDashboard, renderLegal,
 };
