@@ -1,0 +1,294 @@
+// Intel Kernel — 通用"变化情报"引擎（零依赖，Cloudflare Workers）
+// 适配器只需提供数据获取/归一化/差异/总结；本引擎负责 x402 收银、订阅、
+// Dashboard、MCP、定时扫描、合规与静态发现。一次编写，N 个垂直复用。
+
+export const json = (data, status = 200, headers = {}) =>
+    new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', ...headers } });
+
+const b64 = (o) => btoa(JSON.stringify(o));
+const b64decode = (s) => JSON.parse(atob(s));
+
+function newAccessKey(prefix = 'sci_') {
+    const b = new Uint8Array(24); crypto.getRandomValues(b);
+    return prefix + Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+}
+
+export function buildRequirements(resource, priceUsd, description, cfg) {
+    const maxAmountRequired = String(Math.round(priceUsd * 1_000_000));
+    return {
+        x402Version: 1, network: cfg.NETWORK,
+        maxAmountRequired, resource, description,
+        mimeType: 'application/json',
+        payTo: cfg.PAY_TO,
+        maxTimeoutSeconds: 60,
+        contentType: 'application/json',
+        acceptedPayments: [{
+            type: 'erc20', network: cfg.NETWORK, asset: cfg.USDC_BASE,
+            maxAmountRequired, payTo: cfg.PAY_TO, requiredKind: ['exact']
+        }],
+    };
+}
+
+async function verifyAndSettle(payment, requirements, cfg) {
+    try {
+        const token = payment.startsWith('Bearer ') ? payment.slice(7) : payment;
+        const p = b64decode(token);
+        const r = await fetch(cfg.FACILITATOR + '/verify', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ x402: p, kind: 'exact', resource: requirements.resource, amount: requirements.maxAmountRequired }),
+        });
+        const j = await r.json();
+        if (!r.ok || !j?.verifyResponse?.valid) return { ok: false, reason: 'invalid_payment' };
+        const s = await fetch(cfg.FACILITATOR + '/settle', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ x402: p, kind: 'exact', resource: requirements.resource, amount: requirements.maxAmountRequired }),
+        });
+        const sj = await s.json();
+        if (!s.ok || !sj?.settleResponse?.success) return { ok: false, reason: 'settle_failed' };
+        return { ok: true, payment: p, settlement: sj.settleResponse };
+    } catch { return { ok: false, reason: 'verify_error' }; }
+}
+
+async function requirePaid(request, resource, priceUsd, description, cfg) {
+    const requirements = buildRequirements(resource, priceUsd, description, cfg);
+    const payment = request.headers.get('PAYMENT') || request.headers.get('X-PAYMENT');
+    if (!payment) return { paid: false, requirements, response: json({ x402Version: 1, error: 'payment_required', accepts: [requirements] }, 402, { 'PAYMENT-REQUIRED': b64(requirements) }) };
+    const s = await verifyAndSettle(payment, requirements, cfg);
+    if (!s.ok) return { paid: false, requirements, response: json({ error: s.reason }, 402) };
+    return { paid: true, settlement: s.settlement };
+}
+
+const LIMITS = { pro: 25, business: 150, enterprise: 100000 };
+
+const PLANS = (A) => ({
+    pro: { id: 'pro', name: 'Pro', price: 99, days: 30, features: A.planFeatures?.pro || [] },
+    business: { id: 'business', name: 'Business', price: 499, days: 30, features: A.planFeatures?.business || [] },
+    enterprise: { id: 'enterprise', name: 'Enterprise', price: 2000, days: 30, features: A.planFeatures?.enterprise || [] },
+});
+
+// ---------- KV helpers ----------
+async function loadSub(kv, key) {
+    if (!kv || !key) return null;
+    const raw = await kv.get(`sub-${key}`); if (!raw) return null;
+    const sub = JSON.parse(raw); sub.active = new Date(sub.expiresAt).getTime() > Date.now(); return sub;
+}
+async function getWatch(kv, key) {
+    const raw = await kv.get(`watch-${key}`);
+    return raw ? JSON.parse(raw) : { targets: [], webhookUrl: '', alertEmail: '', updatedAt: null };
+}
+async function watchView(A, kv, key) {
+    const sub = await loadSub(kv, key);
+    if (!sub) return { error: 'invalid_key', status: 401 };
+    const wl = await getWatch(kv, key);
+    return {
+        accessKey: key, plan: sub.plan, active: sub.active, expiresAt: sub.expiresAt,
+        targetLimit: LIMITS[sub.plan] || 0, targets: wl.targets,
+        webhookUrl: wl.webhookUrl || '', alertEmail: wl.alertEmail || '',
+    };
+}
+
+async function dispatchAlerts(A, cfg, wl, alerts) {
+    if (!alerts.length) return;
+    if (wl.webhookUrl) for (const a of alerts) try {
+        await fetch(wl.webhookUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: A.id, ...a }) });
+    } catch {}
+    if (wl.alertEmail && cfg.RESEND_API_KEY) try {
+        const total = alerts.reduce((n, a) => n + a.changes.length, 0);
+        await fetch('https://api.resend.com/emails', {
+            method: 'POST', headers: { authorization: 'Bearer ' + cfg.RESEND_API_KEY, 'content-type': 'application/json' },
+            body: JSON.stringify({ from: `${A.title} <alerts@${cfg.MAIL_DOMAIN || 'example.com'}>`, to: [wl.alertEmail], subject: `🔔 ${total} change(s) · ${A.title}`, html: A.emailHtml ? A.emailHtml(alerts) : JSON.stringify(alerts) }),
+        });
+    } catch {}
+}
+
+// Refresh one watchlist (manual or cron). Returns alerts.
+async function refreshWatchlist(A, cfg, kv, wl, only) {
+    const targets = only ? wl.targets.filter(t => t.target === only) : wl.targets;
+    const alerts = [];
+    await Promise.all(targets.map(async entry => {
+        try {
+            const snap = await A.fetchSnapshot({ platform: entry.platform, handle: entry.handle });
+            const prev = await kv.get(A.kvKey(snap.platform, snap.handle));
+            const changes = prev ? A.diff(JSON.parse(prev).items, snap.items) : [];
+            await kv.put(A.kvKey(snap.platform, snap.handle), JSON.stringify({ items: snap.items, at: Date.now() }));
+            entry.lastChecked = new Date().toISOString(); entry.lastChanges = changes.slice(0, 100);
+            if (changes.length) alerts.push({ target: snap.handle, platform: snap.platform, changes: changes.slice(0, 50), checkedAt: entry.lastChecked });
+        } catch (e) { entry.lastChecked = new Date().toISOString(); entry.error = String(e?.message || e); }
+    }));
+    return alerts;
+}
+
+async function scheduledScan(A, cfg, env) {
+    const kv = env[cfg.KV_BINDING]; let cursor, scanned = 0, refreshed = 0;
+    do {
+        const l = await kv.list({ prefix: 'watch-', cursor, limit: 100 });
+        for (const it of l.keys) {
+            const key = it.name.slice(6); if (!key.startsWith('sci_')) continue; scanned++;
+            try {
+                const sub = await loadSub(kv, key); if (!sub || !sub.active) continue;
+                const wl = await getWatch(kv, key); if (!wl.targets.length) continue;
+                const alerts = await refreshWatchlist(A, cfg, kv, wl);
+                await kv.put(`watch-${key}`, JSON.stringify(wl));
+                await dispatchAlerts(A, cfg, wl, alerts); refreshed++;
+            } catch {}
+        }
+        cursor = l.cursor; if (scanned >= 500) break;
+    } while (cursor);
+    console.log(A.id, 'scheduled scan', scanned, refreshed);
+}
+
+export { requirePaid, newAccessKey, watchView };
+export { PLANS, LIMITS };
+export { loadSub, getWatch, dispatchAlerts, refreshWatchlist, scheduledScan };
+
+// ============================================================================
+// HTTP / MCP server factory
+// ============================================================================
+async function readJson(request) { try { return await request.json(); } catch { return {}; } }
+const html = (s) => new Response(s, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+
+export function createServer(A, cfg) {
+    const Plans = PLANS(A);
+
+    async function handleSubscribe(url, request, kv) {
+        const plan = Plans[url.searchParams.get('plan')];
+        if (!plan) return json({ error: 'invalid_plan', plans: Object.keys(Plans) }, 400);
+        const origin = url.origin;
+        const resource = `${origin}/v1/subscribe?plan=${plan.id}`;
+        const pay = await requirePaid(request, resource, plan.price, `${A.title} ${plan.name} subscription`, cfg);
+        if (!pay.paid) return pay.response;
+        const now = Date.now();
+        const expiresAt = new Date(now + plan.days * 86400e3).toISOString();
+        const accessKey = newAccessKey();
+        await kv.put(`sub-${accessKey}`, JSON.stringify({ accessKey, plan: plan.id, payer: pay.settlement.payer || '', startedAt: new Date(now).toISOString(), expiresAt, priceUsd: plan.price }));
+        return json({ ok: true, accessKey, plan: plan.id, expiresAt });
+    }
+
+    async function watchAdd(url, request, kv) {
+        const key = url.searchParams.get('key');
+        const sub = await loadSub(kv, key);
+        if (!sub) return json({ error: 'invalid_key' }, 401);
+        if (!sub.active) return json({ error: 'subscription_expired' }, 402);
+        const body = await readJson(request);
+        const parsed = A.parseTarget(body.target);
+        if (!parsed) return json({ error: 'invalid_target' }, 400);
+        const wl = await getWatch(kv, key);
+        if (wl.targets.length >= (LIMITS[sub.plan] || 0)) return json({ error: 'plan_limit' }, 400);
+        if (wl.targets.some(t => t.target === parsed.handle && t.platform === parsed.platform)) return json({ error: 'already_added' }, 400);
+        wl.targets.push({ target: parsed.handle, platform: parsed.platform, addedAt: new Date().toISOString(), lastChecked: null, lastChanges: [] });
+        await kv.put(`watch-${key}`, JSON.stringify(wl));
+        return json(await watchView(A, kv, key));
+    }
+    async function watchRemove(url, request, kv) {
+        const key = url.searchParams.get('key');
+        if (!(await loadSub(kv, key))) return json({ error: 'invalid_key' }, 401);
+        const body = await readJson(request);
+        const wl = await getWatch(kv, key);
+        wl.targets = wl.targets.filter(t => t.target !== A.safeHandle(body.target));
+        await kv.put(`watch-${key}`, JSON.stringify(wl));
+        return json(await watchView(A, kv, key));
+    }
+    async function watchSettings(url, request, kv) {
+        const key = url.searchParams.get('key');
+        if (!(await loadSub(kv, key))) return json({ error: 'invalid_key' }, 401);
+        const body = await readJson(request);
+        const webhookUrl = (body.webhookUrl || '').trim().slice(0, 500);
+        const alertEmail = (body.alertEmail || '').trim().slice(0, 200);
+        if (webhookUrl && !/^https:\/\//.test(webhookUrl)) return json({ error: 'webhook_https' }, 400);
+        if (alertEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(alertEmail)) return json({ error: 'invalid_email' }, 400);
+        const wl = await getWatch(kv, key);
+        wl.webhookUrl = webhookUrl; wl.alertEmail = alertEmail;
+        await kv.put(`watch-${key}`, JSON.stringify(wl));
+        return json(await watchView(A, kv, key));
+    }
+    async function watchRefresh(url, request, kv) {
+        const key = url.searchParams.get('key');
+        const sub = await loadSub(kv, key);
+        if (!sub) return json({ error: 'invalid_key' }, 401);
+        if (!sub.active) return json({ error: 'subscription_expired' }, 402);
+        const wl = await getWatch(kv, key);
+        const only = url.searchParams.get('target');
+        const alerts = await refreshWatchlist(A, cfg, kv, wl, only);
+        await kv.put(`watch-${key}`, JSON.stringify(wl));
+        await dispatchAlerts(A, cfg, wl, alerts);
+        return json(await watchView(A, kv, key));
+    }
+
+    // ---- MCP ----
+    async function handleMcp(request, kv) {
+        let msg; try { msg = await request.json(); } catch { return json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }, 400); }
+        const { id } = msg;
+        const ok = (result) => json({ jsonrpc: '2.0', id, result });
+        const err = (code, message) => json({ jsonrpc: '2.0', id, error: { code, message } });
+        const text = (t, isError, extra) => json({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: t }] }, ...(isError ? { isError: true } : {}) }, 200, extra || {});
+        if (msg.method === 'initialize') return ok({ protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: A.id, version: A.version } });
+        if (msg.method === 'notifications/initialized') return new Response(null, { status: 202 });
+        if (msg.method === 'tools/list') return ok({ tools: A.mcpTools });
+        if (msg.method === 'tools/call') {
+            const a = msg.params?.arguments || {};
+            const def = A.mcpTools.find(t => t.name === msg.params?.name);
+            if (!def) return err(-32601, 'unknown tool');
+            const price = def.price(a);
+            const resource = request.url;
+            if (price > 0) {
+                const pay = await requirePaid(request, resource, price, def.name, cfg);
+                if (!pay.paid) {
+                    const r = pay.requirements;
+                    return text(JSON.stringify({ x402Version: 1, error: 'payment_required', accepts: [r] }), true, { 'PAYMENT-REQUIRED': b64(r) });
+                }
+            }
+            try { return text(JSON.stringify(await def.run(a))); }
+            catch (e) { return text(JSON.stringify({ error: String(e?.message || e) }), true); }
+        }
+        return err(-32601, 'method not found');
+    }
+
+    async function handle(request, env) {
+        const url = new URL(request.url); const p = url.pathname;
+        const kv = env[cfg.KV_BINDING];
+
+        if (p === '/') return html(A.renderHome());
+        if (p === '/pricing') return html(A.renderPricing(Plans));
+        if (p === '/dashboard') return html(A.renderDashboard());
+        if (p === '/health') return json({ ok: true });
+        if (p === '/llms.txt') return new Response(A.llmsTxt(cfg), { headers: { 'content-type': 'text/plain' } });
+        if (p === '/robots.txt') return new Response('User-agent: *\nAllow: /\n', { headers: { 'content-type': 'text/plain' } });
+        if (p === '/sitemap.xml') return new Response(A.sitemapXml(cfg), { headers: { 'content-type': 'application/xml' } });
+        if (p === '/.well-known/x402') return json(A.wellKnown(cfg));
+        if (p === '/.well-known/glama.json') return json({ $schema: 'https://glama.ai/mcp/schemas/connector.json', maintainers: [{ email: cfg.CONTACT_EMAIL }] });
+        if (p === '/privacy') return html(A.renderLegal('Privacy Policy', cfg));
+        if (p === '/terms') return html(A.renderLegal('Terms of Service', cfg));
+        if (p === '/contact') return html(A.renderLegal('Contact & Abuse', cfg));
+
+        if (p === '/mcp') return handleMcp(request, kv);
+        if (p === '/v1/snapshot') {
+            const t = A.parseTarget(url.searchParams.get('target')); if (!t) return json({ error: 'invalid_target' }, 400);
+            return json(await A.snapshot(t));
+        }
+        if (p === '/v1/subscribe') return handleSubscribe(url, request, kv);
+        if (p === '/v1/watch') return json(await watchView(A, kv, url.searchParams.get('key')));
+        if (p === '/v1/watch/add') return watchAdd(url, request, kv);
+        if (p === '/v1/watch/remove') return watchRemove(url, request, kv);
+        if (p === '/v1/watch/settings') return watchSettings(url, request, kv);
+        if (p === '/v1/watch/refresh') return watchRefresh(url, request, kv);
+        if (p === '/v1/admin/stats') {
+            if ((request.headers.get('x-admin-key') || url.searchParams.get('key')) !== cfg.ADMIN_KEY) return json({ error: 'forbidden' }, 403);
+            return json({ ok: true });
+        }
+        return json({ error: 'not_found' }, 404);
+    }
+
+    return {
+        async fetch(request, env) {
+            try {
+                if (request.method === 'OPTIONS') return new Response(null, { headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' } });
+                const r = await handle(request, env);
+                r.headers.set('access-control-allow-origin', '*');
+                r.headers.set('X-Content-Type-Options', 'nosniff');
+                return r;
+            } catch (e) { console.error(e); return json({ error: 'internal_error' }, 500); }
+        },
+        async scheduled(event, env, ctx) { ctx.waitUntil(scheduledScan(A, cfg, env)); },
+    };
+}
+

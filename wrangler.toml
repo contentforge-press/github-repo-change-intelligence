@@ -1,0 +1,11 @@
+name = "github-intel"
+main = "src/worker.js"
+compatibility_date = "2025-03-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[kv_namespaces]]
+binding = "INTEL_KV"
+id = "ac5ba2dc8c1f45a09b399cd23becdc0b"
+
+[triggers]
+crons = ["0 8 * * *"]
