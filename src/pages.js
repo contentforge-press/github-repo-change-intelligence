@@ -54,9 +54,14 @@ export function renderPricing(Plans) {
     return shell('Pricing · GitHub Repo Change Intelligence', `
 <h1 style="text-align:center">Plans &amp; pricing</h1><p class="sub" style="text-align:center">Billed in <b>USDC on Base</b> — no card.</p>
 <div class="grid2">${cards}</div>
-<div class="card" id="paybox" style="display:none"><pre id="payjson"></pre></div>
+<div class="card" id="paybox" style="display:none"></div>
+<p class="sub" style="text-align:center;margin-top:26px">Paying directly with USDC? No AI wallet needed — click a plan above, send the exact amount, your key is issued automatically.</p>
 <style>
 .grid2{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+#paybox .payrow{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:14px}
+#paybox .payrow b{word-break:break-all;text-align:right}
+#paybox .big{font-size:26px;font-weight:700;color:var(--acc)}
+#paybox button{margin-top:14px;padding:11px 18px;background:var(--acc);color:#fff;border:none;border-radius:10px;cursor:pointer;font-size:15px}
 .plan{position:relative;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:26px 22px;display:flex;flex-direction:column}
 .plan.hl{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
 .pop{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:var(--acc);font-size:11px;padding:4px 12px;border-radius:999px}
@@ -67,10 +72,24 @@ li:before{content:"✓";position:absolute;left:0;color:var(--acc)}.cta{margin-to
 @media(max-width:860px){.grid2{grid-template-columns:1fr}}
 </style>
 <script>
+let timer=null;
 document.querySelectorAll('.cta').forEach(b=>b.onclick=async()=>{
- const box=document.getElementById('paybox');box.style.display='block';document.getElementById('payjson').textContent='loading…';
- const r=await fetch('/v1/subscribe?plan='+b.dataset.plan,{method:'POST'});const j=await r.json();
- document.getElementById('payjson').textContent=r.status===402?JSON.stringify(j,null,2):JSON.stringify(j,null,2);
+ const box=document.getElementById('paybox');box.style.display='block';box.innerHTML='Preparing order…';
+ clearInterval(timer);
+ const r=await fetch('/v1/order?plan='+b.dataset.plan);const o=await r.json();
+ if(o.error){box.textContent=o.error;return;}
+ box.innerHTML=
+  '<div class="payrow"><span>Plan</span><b>'+o.planName+'</b></div>'+
+  '<div class="payrow"><span>Send exactly</span><b class="big">'+o.amountUsd+' USDC</b></div>'+
+  '<div class="payrow"><span>Network</span><b>Base (ERC-20)</b></div>'+
+  '<div class="payrow"><span>To address</span><b>'+o.payTo+'</b></div>'+
+  '<p class="sub" style="margin-top:12px">Send the <b>exact</b> amount from any exchange or wallet (Coinbase / Binance / MetaMask…). Order expires in 60 minutes.</p>'+
+  '<div id="pstatus" class="sub">Waiting for payment… (confirming automatically)</div>';
+ timer=setInterval(async()=>{
+  const c=await (await fetch('/v1/order/check?id='+o.orderId)).json();
+  if(c.status==='paid'){clearInterval(timer);document.getElementById('pstatus').innerHTML='✅ Payment confirmed. Your access key: <b>'+c.accessKey+'</b> — save it and open the <a href="/dashboard">Dashboard</a>.';}
+  else if(c.status==='expired'){clearInterval(timer);document.getElementById('pstatus').textContent='Order expired. Please start again.';}
+ },6000);
 });
 </script>`);
 }

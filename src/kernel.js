@@ -144,6 +144,62 @@ export { loadSub, getWatch, dispatchAlerts, refreshWatchlist, scheduledScan };
 // ============================================================================
 // HTTP / MCP server factory
 // ============================================================================
+// ============================================================================
+// Human direct-pay（真人直接链上付 USDC：下单 + 查单自动发 key）
+// 用"唯一金额"识别（USDC转账无法附备注），Base 公共 RPC 读 Transfer 日志。
+// ============================================================================
+const RPC = (cfg) => cfg.RPC_URL || 'https://mainnet.base.org';
+
+async function baseBlockNumber(cfg) {
+    const r = await fetch(RPC(cfg), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] }) });
+    return parseInt((await r.json()).result, 16);
+}
+
+async function findDirectPayment(cfg, expectUnits, windowBlocks = 1900) {
+    const head = await baseBlockNumber(cfg);
+    const fromBlock = '0x' + Math.max(0, head - windowBlocks).toString(16);
+    const padded = cfg.PAY_TO.slice(2).toLowerCase().padStart(64, '0');
+    const topics = ['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef', null, '0x' + padded];
+    const r = await fetch(RPC(cfg), {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'eth_getLogs', params: [{ address: cfg.USDC_BASE, fromBlock, toBlock: 'latest', topics }] }),
+    });
+    const j = await r.json();
+    if (!Array.isArray(j.result)) return null;
+    for (const log of j.result) {
+        if (log.data && BigInt(log.data) === BigInt(expectUnits)) {
+            const from = '0x' + (log.topics[1] || '').slice(26);
+            return { tx: log.transactionHash, from, block: parseInt(log.blockNumber, 16) };
+        }
+    }
+    return null;
+}
+
+function createDirectOrder(plan, cfg, kv) {
+    const salt = crypto.getRandomValues(new Uint8Array(2));
+    const extra = ((salt[0] << 8 | salt[1]) % 900 + 100); // 100..999
+    const amountUsd = +(plan.price + extra / 1_000_000).toFixed(6);
+    const orderId = newAccessKey('ord_');
+    const order = { orderId, plan: plan.id, planName: plan.name, amountUsd, amountUnits: String(Math.round(amountUsd * 1_000_000)), payTo: cfg.PAY_TO, network: cfg.NETWORK, asset: cfg.USDC_BASE, status: 'awaiting', createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 90 * 60e3).toISOString() };
+    return kv.put(`order-${orderId}`, JSON.stringify(order), { expirationTtl: 5400 }).then(() => order);
+}
+
+async function checkDirectOrder(order, cfg, kv, A) {
+    if (order.status === 'paid') return order;
+    if (new Date(order.expiresAt).getTime() < Date.now()) { order.status = 'expired'; await kv.put(`order-${order.orderId}`, JSON.stringify(order)); return order; }
+    const found = await findDirectPayment(cfg, order.amountUnits);
+    if (!found) return order;
+    order.status = 'paid'; order.tx = found.tx; order.payer = found.from; order.paidAt = new Date().toISOString();
+    const now = Date.now();
+    const plan = PLANS(A)[order.plan];
+    const expiresAt = new Date(now + plan.days * 86400e3).toISOString();
+    const accessKey = newAccessKey();
+    order.accessKey = accessKey;
+    await kv.put(`sub-${accessKey}`, JSON.stringify({ accessKey, plan: plan.id, payer: found.from || '', startedAt: new Date(now).toISOString(), expiresAt, priceUsd: plan.price, source: 'direct', orderId: order.orderId }));
+    await kv.put(`order-${order.orderId}`, JSON.stringify(order));
+    return order;
+}
+
 async function readJson(request) { try { return await request.json(); } catch { return {}; } }
 const html = (s) => new Response(s, { headers: { 'content-type': 'text/html; charset=utf-8' } });
 
@@ -266,6 +322,19 @@ export function createServer(A, cfg) {
             return json(await A.snapshot(t));
         }
         if (p === '/v1/subscribe') return handleSubscribe(url, request, kv);
+        // ---- Human direct-pay（无需x402钱包）----
+        if (p === '/v1/order') {
+            const plan = Plans[url.searchParams.get('plan')];
+            if (!plan) return json({ error: 'invalid_plan', plans: Object.keys(Plans) }, 400);
+            const order = await createDirectOrder(plan, cfg, kv);
+            return json(order);
+        }
+        if (p === '/v1/order/check') {
+            const id = url.searchParams.get('id');
+            const raw = id ? await kv.get(`order-${id}`) : null;
+            if (!raw) return json({ error: 'order_not_found' }, 404);
+            return json(await checkDirectOrder(JSON.parse(raw), cfg, kv, A));
+        }
         if (p === '/v1/watch') return json(await watchView(A, kv, url.searchParams.get('key')));
         if (p === '/v1/watch/add') return watchAdd(url, request, kv);
         if (p === '/v1/watch/remove') return watchRemove(url, request, kv);
