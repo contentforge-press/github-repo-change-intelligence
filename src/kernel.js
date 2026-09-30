@@ -309,6 +309,7 @@ export function createServer(A, cfg) {
         if (p === '/dashboard') return html(A.renderDashboard());
         if (p === '/health') return json({ ok: true });
         if (p === '/llms.txt') return new Response(A.llmsTxt(cfg), { headers: { 'content-type': 'text/plain' } });
+        if (p === '/docs') return new Response(A.docsMd(cfg), { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
         if (p === '/robots.txt') return new Response('User-agent: *\nAllow: /\n', { headers: { 'content-type': 'text/plain' } });
         if (p === '/sitemap.xml') return new Response(A.sitemapXml(cfg), { headers: { 'content-type': 'application/xml' } });
         if (p === '/.well-known/x402') return json(A.wellKnown(cfg));
