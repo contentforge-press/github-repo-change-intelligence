@@ -6,6 +6,7 @@ export const json = (data, status = 200, headers = {}) =>
     new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', ...headers } });
 
 import { telemetry, readTelemetry } from './telemetry.js';
+import { paymentRequiredResponse, verifySettleDual } from './x402v2.js';
 import { recordAnalytics, readAnalytics, ANALYTICS_JS } from './analytics.js';
 
 // 真实证据区块：每个产品展示自己的实时案例卡
@@ -100,9 +101,13 @@ async function verifyAndSettle(payment, requirements, cfg) {
 
 async function requirePaid(request, resource, priceUsd, description, cfg) {
     const requirements = buildRequirements(resource, priceUsd, description, cfg);
-    const payment = request.headers.get('PAYMENT') || request.headers.get('X-PAYMENT');
-    if (!payment) return { paid: false, requirements, response: json({ x402Version: 1, error: 'payment_required', accepts: [requirements] }, 402, { 'PAYMENT-REQUIRED': b64(requirements) }) };
-    const s = await verifyAndSettle(payment, requirements, cfg);
+    const payment = request.headers.get('PAYMENT') || request.headers.get('X-PAYMENT')
+        || request.headers.get('PAYMENT-SIGNATURE');
+    if (!payment) return { paid: false, requirements, response: paymentRequiredResponse({ resource, description, priceUsd, cfg, v1Requirements: requirements }) };
+    const s = await verifySettleDual({
+        request, resource, amount: requirements.maxAmountRequired, priceUsd, cfg,
+        v1Verify: (raw) => verifyAndSettle(raw, requirements, cfg),
+    });
     if (!s.ok) return { paid: false, requirements, response: json({ error: s.reason }, 402) };
     return { paid: true, settlement: s.settlement };
 }
