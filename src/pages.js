@@ -15,8 +15,8 @@ pre{background:#0d1119;border:1px solid var(--line);border-radius:10px;padding:1
 @media(max-width:760px){.grid{grid-template-columns:1fr}}
 `;
 
-const shell = (title, body) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${title}</title><style>${CSS}</style></head><body><div class="wrap">${body}</div></body></html>`;
+const DEFAULT_DESC = 'Track releases, stars, issues and pushes of any public GitHub repo. Free CLI quota, Hobby $9/mo in USDC.'
+const shell = (title, body, desc=DEFAULT_DESC) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">\n<meta name="description" content="${desc}">\n<link rel="icon" type="image/png" href="/favicon.png">\n<meta property="og:type" content="website">\n<meta property="og:title" content="${title}">\n<meta property="og:description" content="${desc}">\n<meta property="og:image" content="/og.png">\n<meta name="twitter:card" content="summary_large_image">\n<title>${title}</title><style>${CSS}</style></head><body><div class="wrap">${body}</div></body></html>`;
 
 export function renderHome() {
     return shell('GitHub Repo Change Intelligence', `
@@ -49,6 +49,42 @@ async function run(){const o=document.getElementById('out');o.textContent='loadi
 </script>`);
 }
 
+// Product changelog (reverse chronological). Rendered at /changelog.
+export const CHANGELOG = [
+  { date: '2026-10-01', tag: 'Growth', items: [
+    'Hobby $9 entry plan launched across the product line.',
+    'Free CLI with per-install quota: changes/intel 20, batch/landscape 3 per 30 days.',
+    'Product surfaces now share one access key across all five intelligence feeds.',
+  ]},
+  { date: '2026-09-30', tag: 'Discovery', items: [
+    'Added llms.txt and /docs for AI-agent discoverability.',
+    'Public /status page with live browser-side health probes.',
+    'Landing page now bridges snapshot results into a clear upgrade path.',
+  ]},
+  { date: '2026-09-29', tag: 'Platform', items: [
+    'Listed on the official MCP Registry, Smithery and Glama.',
+    'Self-serve /pricing checkout and /dashboard with webhook + email alerts.',
+    'Company-grade hardening: no key custody, SSRF guard, per-key rate limits.',
+  ]},
+];
+
+export function renderChangelog(productName = 'Change Intelligence') {
+    const rows = CHANGELOG.map(r => `
+<div class="cl-card">
+  <div class="cl-head"><span class="cl-date">${r.date}</span><span class="cl-tag">${r.tag}</span></div>
+  <ul>${r.items.map(i => `<li>${i}</li>`).join('')}</ul>
+</div>`).join('');
+    return shell('Changelog · ' + productName, `
+<h1>Changelog</h1><p class="sub">What shipped, most recent first.</p>
+${rows}
+<style>
+.cl-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0}
+.cl-head{display:flex;align-items:center;gap:12px;margin-bottom:8px}
+.cl-date{font-weight:700}.cl-tag{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--acc);border:1px solid var(--line);border-radius:999px;padding:2px 10px}
+.cl-card ul{margin:0;padding-left:20px}.cl-card li{padding:3px 0;font-size:14px}
+</style>`);
+}
+
 export function renderPricing(Plans) {
     const cards = Object.values(Plans).map((p, i) => `
 <div class="plan${i === 1 ? ' hl' : ''}">${i === 1 ? '<div class="pop">Most popular</div>' : ''}
@@ -61,7 +97,7 @@ export function renderPricing(Plans) {
 <div class="card" id="paybox" style="display:none"></div>
 <p class="sub" style="text-align:center;margin-top:26px">Paying directly with USDC? No AI wallet needed — click a plan above, send the exact amount, your key is issued automatically.</p>
 <style>
-.grid2{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.grid2{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
 #paybox .payrow{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:14px}
 #paybox .payrow b{word-break:break-all;text-align:right}
 #paybox .big{font-size:26px;font-weight:700;color:var(--acc)}

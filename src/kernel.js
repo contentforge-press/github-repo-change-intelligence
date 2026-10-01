@@ -5,6 +5,8 @@
 export const json = (data, status = 200, headers = {}) =>
     new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', ...headers } });
 
+import { telemetry, readTelemetry } from './telemetry.js';
+
 const b64 = (o) => btoa(JSON.stringify(o));
 const b64decode = (s) => JSON.parse(atob(s));
 
@@ -58,9 +60,13 @@ async function requirePaid(request, resource, priceUsd, description, cfg) {
     return { paid: true, settlement: s.settlement };
 }
 
-const LIMITS = { pro: 25, business: 150, enterprise: 100000 };
+const LIMITS = { hobby: 10, pro: 25, business: 150, enterprise: 100000 };
+
+// 匿名免费 CLI 用量墙（每安装、30天滚动窗口）
+const FREE_CLI_QUOTA = { changes: 20, intel: 20, batch: 3, landscape: 3 };
 
 const PLANS = (A) => ({
+    hobby: { id: 'hobby', name: 'Hobby', price: 9, days: 30, features: A.planFeatures?.hobby || ['Unlimited CLI calls', 'No attribution', 'All per-result tools'] },
     pro: { id: 'pro', name: 'Pro', price: 99, days: 30, features: A.planFeatures?.pro || [] },
     business: { id: 'business', name: 'Business', price: 499, days: 30, features: A.planFeatures?.business || [] },
     enterprise: { id: 'enterprise', name: 'Enterprise', price: 2000, days: 30, features: A.planFeatures?.enterprise || [] },
@@ -71,6 +77,44 @@ async function loadSub(kv, key) {
     if (!kv || !key) return null;
     const raw = await kv.get(`sub-${key}`); if (!raw) return null;
     const sub = JSON.parse(raw); sub.active = new Date(sub.expiresAt).getTime() > Date.now(); return sub;
+}
+
+// ---------- 匿名 CLI 用量记账（养肥了再收）----------
+// 记录结构：{events:[{t,k}], wins:[字符串证据], windowStart}
+async function bumpInstall(kv, installId, kind, win) {
+    if (!installId) return null;
+    const key = `inst-${installId}`;
+    const now = Date.now();
+    let rec = null;
+    const raw = await kv.get(key);
+    if (raw) { try { rec = JSON.parse(raw); } catch { rec = null; } }
+    if (!rec || !rec.windowStart || now - rec.windowStart > 30 * 864e5) rec = { windowStart: now, events: [], wins: [] };
+    rec.events = rec.events.filter(e => now - e.t < 30 * 864e5);
+    const isWin = kind.startsWith('_win_');
+    if (!isWin) rec.events.push({ t: now, k: kind });
+    if (win || isWin) { rec.wins = rec.wins || []; if (rec.wins.length < 30) rec.wins.push(win || kind.replace(/^_win_/, '')); }
+    await kv.put(key, JSON.stringify(rec), { expirationTtl: 60 * 86400 });
+    const realKind = isWin ? kind.replace(/^_win_/, '') : kind;
+    const used = rec.events.filter(e => e.k === realKind).length;
+    return { used, wins: rec.wins };
+}
+
+// 付费门：识别 key（Hobby+）或匿名配额；否则给出引导
+async function gateCli(cfg, kv, request, url, kind, win) {
+    const key = url.searchParams.get('key');
+    if (key) {
+        const sub = await loadSub(kv, key);
+        if (sub && sub.active) return { allow: true, sub };
+        return { allow: false, reason: 'key_invalid' };
+    }
+    const install = url.searchParams.get('install') || request.headers.get('x-install-id') || '';
+    if (install) {
+        const quota = cfg.FREE_QUOTA?.[kind] ?? FREE_CLI_QUOTA[kind] ?? 0;
+        const m = await bumpInstall(kv, install, kind, win);
+        if (m && m.used <= quota) return { allow: true, used: m.used, quota, wins: m.wins };
+        return { allow: false, reason: 'quota_exceeded', used: m?.used, quota, wins: m?.wins || [] };
+    }
+    return { allow: false, reason: 'no_identity' };
 }
 async function getWatch(kv, key) {
     const raw = await kv.get(`watch-${key}`);
@@ -299,16 +343,79 @@ export function createServer(A, cfg) {
         return err(-32601, 'method not found');
     }
 
+    // ---------- 免费 CLI：白嫖→撞墙→$9 矮台阶 ----------
+    async function handleCli(A, cfg, request, url, kv) {
+        const kind = url.searchParams.get('tool');
+        const toolMap = { changes: 'repo_changes', intel: 'repo_intel_report', batch: 'repo_batch_scan', landscape: 'repo_landscape' };
+        const def = A.mcpTools.find(t => t.name === toolMap[kind]);
+        if (!def) return json({ error: 'invalid_tool', tools: Object.keys(toolMap) }, 400);
+
+        // 构造参数
+        let args;
+        if (kind === 'batch' || kind === 'landscape') {
+            let body = {};
+            if (request.method === 'POST') { try { body = await request.json(); } catch { body = {}; } }
+            const targets = body.targets || (url.searchParams.get('targets') || '').split(',').map(s => s.trim()).filter(Boolean);
+            args = { targets };
+        } else {
+            args = { target: url.searchParams.get('target') };
+        }
+        if ((kind === 'changes' || kind === 'intel') && !A.parseTarget(args.target)) return json({ error: 'invalid_target' }, 400);
+
+        // 1) 已登录 key（Hobby+）→ 放行
+        // 2) 匿名 → 配额墙；配额内放行并记账，超墙给价值证据 + $9 引导
+        // 3) 带 x402 支付头 → 按次结算（AI 走这条，不受配额限）
+        const payHdr = request.headers.get('X-PAYMENT') || '';
+        if (!payHdr) {
+            const g = await gateCli(cfg, kv, request, url, kind);
+            if (!g.allow) {
+                const plansUrl = '/pricing';
+                return json({
+                    error: g.reason,
+                    upgrade: 'https://' + (cfg.HOST || url.host) + plansUrl,
+                    hobby: { id: 'hobby', price: 9, perks: 'unlimited CLI, no attribution' },
+                    used: g.used, quota: g.quota,
+                    valueDelivered: (g.wins || []).slice(-6),
+                    message: g.reason === 'quota_exceeded'
+                        ? `You've used this ${g.used} times in 30 days. Hobby ($9/month) unlocks unlimited calls and removes attribution.`
+                        : 'Add ?key=<accessKey> or ?install=<id>.',
+                }, 402);
+            }
+        } else {
+            const price = def.price(args);
+            const pay = await requirePaid(request, request.url, price, def.name, cfg);
+            if (!pay.paid) return json({ x402Version: 1, error: 'payment_required', accepts: [pay.requirements] }, 402, { 'PAYMENT-REQUIRED': b64(pay.requirements) });
+        }
+
+        let result;
+        try { result = await def.run(args); }
+        catch (e) {
+            const msg = String(e?.message || e);
+            return json({ error: 'upstream_unavailable', detail: msg, retry: 'try again shortly' }, 502);
+        }
+        // 匿名成功：记一条“帮你做到了什么”的价值证据，供撞墙时甩到脸上
+        const installId = request.headers.get('x-install-id') || url.searchParams.get('install') || '';
+        if (installId && !url.searchParams.get('key') && !payHdr) {
+            const win = A.winEvidence?.(kind, args, result) || `${kind} call for ${args.target || (args.targets || []).length + ' targets'}`;
+            await bumpInstall(kv, installId, '_win_' + kind, win).catch(() => {});
+        }
+        const attributed = !!(url.searchParams.get('key') || payHdr);
+        return json({ data: result, attribution: attributed ? '' : (A.cliAttribution || `${A.title} — free via x402 · remove attribution with Hobby $9/mo`) });
+    }
+
     async function handle(request, env) {
         const url = new URL(request.url); const p = url.pathname;
         const kv = env[cfg.KV_BINDING];
         const skv = env[cfg.SHARED_BINDING] || kv;
 
         if (p === '/') return html(A.renderHome());
+        if (p === '/changelog') return html(A.renderChangelog(cfg.TITLE || cfg.NAME));
         if (p === '/pricing') return html(A.renderPricing(Plans));
         if (p === '/dashboard') return html(A.renderDashboard());
         if (p === '/health') return json({ ok: true });
         if (p === '/status') return html(A.renderStatus(cfg.TITLE || cfg.NAME, cfg.STATUS_TARGET || A.STATUS_TARGET || ''));
+        if (p === '/favicon.png') { const { FAVICON_B64 } = await import('./brand.js'); return new Response(Uint8Array.from(atob(FAVICON_B64), c => c.charCodeAt(0)), { headers: { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400' } }); }
+        if (p === '/og.png') { const { OG_B64 } = await import('./brand.js'); return new Response(Uint8Array.from(atob(OG_B64), c => c.charCodeAt(0)), { headers: { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400' } }); }
         if (p === '/llms.txt') return new Response(A.llmsTxt(cfg), { headers: { 'content-type': 'text/plain' } });
         if (p === '/docs') return new Response(A.docsMd(cfg), { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
         if (p === '/robots.txt') return new Response('User-agent: *\nAllow: /\n', { headers: { 'content-type': 'text/plain' } });
@@ -339,13 +446,15 @@ export function createServer(A, cfg) {
             return json(await checkDirectOrder(JSON.parse(raw), cfg, kv, A, skv));
         }
         if (p === '/v1/watch') return json(await watchView(A, kv, url.searchParams.get('key'), skv));
+        if (p === '/v1/cli') return handleCli(A, cfg, request, url, kv);
         if (p === '/v1/watch/add') return watchAdd(url, request, kv, skv);
         if (p === '/v1/watch/remove') return watchRemove(url, request, kv, skv);
         if (p === '/v1/watch/settings') return watchSettings(url, request, kv, skv);
         if (p === '/v1/watch/refresh') return watchRefresh(url, request, kv, skv);
         if (p === '/v1/admin/stats') {
             if ((request.headers.get('x-admin-key') || url.searchParams.get('key')) !== cfg.ADMIN_KEY) return json({ error: 'forbidden' }, 403);
-            return json({ ok: true });
+            const days = parseInt(url.searchParams.get('days') || '7');
+            return json({ ok: true, telemetry: await readTelemetry(kv, days) });
         }
         return json({ error: 'not_found' }, 404);
     }
@@ -358,7 +467,11 @@ export function createServer(A, cfg) {
                 r.headers.set('access-control-allow-origin', '*');
                 r.headers.set('X-Content-Type-Options', 'nosniff');
                 return r;
-            } catch (e) { console.error(e); return json({ error: 'internal_error' }, 500); }
+            } catch (e) {
+                console.error(e);
+                try { const kv0 = env[cfg.KV_BINDING]; await telemetry.http5xx(kv0); } catch {}
+                return json({ error: 'internal_error' }, 500);
+            }
         },
         async scheduled(event, env, ctx) { ctx.waitUntil(scheduledScan(A, cfg, env)); },
     };

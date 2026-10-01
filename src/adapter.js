@@ -1,6 +1,6 @@
 // GitHub Repo Change Intelligence —— 适配器（GitHub 平台）
 // 监控公开 GitHub 仓库的：release、star/issue 数、最近推送/提交活动。
-import { renderHome, renderPricing, renderDashboard, renderLegal, renderStatus } from './pages.js';
+import { renderHome, renderPricing, renderDashboard, renderLegal, renderStatus, renderChangelog } from './pages.js';
 
 const ID = 'github-intel';
 const TITLE = 'GitHub Repo Change Intelligence';
@@ -138,6 +138,14 @@ export const adapter = {
         const t = parseTarget(targetStr); const s = await fetchSnapshot(t);
         return { target: s.handle, repo: s.meta.fullName, note: 'first_snapshot_baseline', latestReleases: s.items.slice(0, 10) };
     },
+    winEvidence(kind, args, result) {
+        const d = result?.data ?? result;
+        if (kind === 'changes') return `Checked releases for ${args.target}: latest ${d.latestReleases?.[0]?.tag || 'n/a'}`;
+        if (kind === 'intel') return `Health report for ${args.target}`;
+        if (kind === 'batch') return `Scanned ${d.scanned ?? (args.targets || []).length} repos`;
+        if (kind === 'landscape') return `Landscape across ${(args.targets || []).length} repos`;
+        return `${kind} call`;
+    },
     async _report(targetStr) {
         const t = parseTarget(targetStr); const s = await fetchSnapshot(t);
         return buildReport(s.meta, s.items, []);
@@ -177,5 +185,5 @@ export const adapter = {
     }),
 
     STATUS_TARGET: 'facebook/react',
-    renderStatus, renderHome, renderPricing, renderDashboard, renderLegal,
+    renderStatus, renderChangelog, renderHome, renderPricing, renderDashboard, renderLegal,
 };
