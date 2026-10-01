@@ -20,4 +20,16 @@ const cfg = {
     // RESEND_API_KEY injected as Worker secret when available
 };
 
-export default createServer(adapter, cfg);
+const server = createServer(adapter, cfg);
+
+// 每个请求注入上游 GitHub token（避免匿名 API 限流导致间歇 500）
+export default {
+    async fetch(request, env, ctx) {
+        globalThis.__GH_TOKEN = (env && (env.GITHUB_TOKEN || env.GH_TOKEN)) || '';
+        return server.fetch(request, env, ctx);
+    },
+    scheduled(event, env, ctx) {
+        globalThis.__GH_TOKEN = (env && (env.GITHUB_TOKEN || env.GH_TOKEN)) || '';
+        return server.scheduled(event, env, ctx);
+    },
+};

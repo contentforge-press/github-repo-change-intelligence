@@ -25,7 +25,10 @@ function parseTarget(input) {
 
 // ---- 取数 ----
 async function getJson(u) {
-    const r = await fetch(u, { headers: { 'user-agent': 'intel-kernel/1.0', 'accept': 'application/vnd.github+json' } });
+    const tok = globalThis.__GH_TOKEN || '';
+    const headers = { 'user-agent': 'intel-kernel/1.0', 'accept': 'application/vnd.github+json' };
+    if (tok) headers.authorization = `Bearer ${tok}`;
+    const r = await fetch(u, { headers });
     if (!r.ok) throw new Error('upstream_' + r.status);
     return r.json();
 }
