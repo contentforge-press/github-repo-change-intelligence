@@ -3,16 +3,22 @@
   "name": "io.github.contentforge-press/github-intel",
   "title": "GitHub Repo Change Intelligence",
   "description": "Track public GitHub repos: free snapshot, paid release, star & issue intel via x402 USDC.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "remotes": [
-    { "type": "streamable-http", "url": "https://github-intel.contentforge-press.workers.dev/mcp" }
+    {
+      "type": "streamable-http",
+      "url": "https://s-github.pixharvest.com/mcp"
+    }
   ],
   "packages": [
     {
       "registryType": "npm",
       "identifier": "github-repo-change-intelligence",
       "version": "1.0.0",
-      "transport": { "type": "streamable-http", "url": "https://github-intel.contentforge-press.workers.dev/mcp" }
+      "transport": {
+        "type": "streamable-http",
+        "url": "https://s-github.pixharvest.com/mcp"
+      }
     }
   ]
 }
