@@ -6,6 +6,22 @@ export const json = (data, status = 200, headers = {}) =>
     new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', ...headers } });
 
 import { telemetry, readTelemetry } from './telemetry.js';
+import { recordAnalytics, readAnalytics, ANALYTICS_JS } from './analytics.js';
+
+// 真实证据区块：每个产品展示自己的实时案例卡
+export const TRUST_HTML = `
+<div class="wrap" style="margin-top:28px">
+ <h2 style="font-size:20px">Real evidence, live data</h2>
+ <p class="muted" style="margin:4px 0 14px">Every number pulled from the same public feed this service monitors. <a href="/card.png" target="_blank">open full size</a></p>
+ <a href="/card.png" target="_blank"><img src="/card.png" alt="real change-intelligence report" loading="lazy" style="width:100%;max-width:860px;border:1px solid var(--line,#222a3a);border-radius:14px;display:block"></a>
+</div>`;
+// 给 HTML 响应注入访客分析脚本；首页/定价页额外插入真实证据区块
+const withAn = (h, p = '') => {
+    if (typeof h !== 'string' || !h.includes('</body>')) return h;
+    const trust = (p === '/' || p === '/pricing') ? TRUST_HTML : '';
+    return h.replace('</body>', `<style>img{max-width:100%}</style>${trust}<script>${ANALYTICS_JS}</script></body>`);
+};
+const htmlAn = (s, st = 200, p = '') => new Response(withAn(s, p), { status: st, headers: { 'content-type': 'text/html; charset=utf-8' } });
 
 // ERC-8004 / The Spawn 风格的机器可读 agent 元数据。
 // 不依赖链上 mint；indexer/agent/人可直接发现能力、端点与付费方式。
@@ -439,24 +455,31 @@ export function createServer(A, cfg) {
         const kv = env[cfg.KV_BINDING];
         const skv = env[cfg.SHARED_BINDING] || kv;
 
-        if (p === '/') return html(A.renderHome());
-        if (p === '/changelog') return html(A.renderChangelog(cfg.TITLE || cfg.NAME));
-        if (p === '/pricing') return html(A.renderPricing(Plans));
-        if (p === '/dashboard') return html(A.renderDashboard());
+        if (p === '/') return htmlAn(A.renderHome(),200,'/');
+        if (p === '/changelog') return htmlAn(A.renderChangelog(cfg.TITLE || cfg.NAME));
+        if (p === '/pricing') return htmlAn(A.renderPricing(Plans),200,'/pricing');
+        if (p === '/dashboard') return htmlAn(A.renderDashboard());
         if (p === '/health') return json({ ok: true });
-        if (p === '/status') return html(A.renderStatus(cfg.TITLE || cfg.NAME, cfg.STATUS_TARGET || A.STATUS_TARGET || ''));
+        if (p === '/status') return htmlAn(A.renderStatus(cfg.TITLE || cfg.NAME, cfg.STATUS_TARGET || A.STATUS_TARGET || ''));
         if (p === '/favicon.png') { const { FAVICON_B64 } = await import('./brand.js'); return new Response(Uint8Array.from(atob(FAVICON_B64), c => c.charCodeAt(0)), { headers: { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400' } }); }
         if (p === '/og.png') { const { OG_B64 } = await import('./brand.js'); return new Response(Uint8Array.from(atob(OG_B64), c => c.charCodeAt(0)), { headers: { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400' } }); }
+        if (p === '/card.png') { const { CARD_B64 } = await import('./trust.js'); return new Response(Uint8Array.from(atob(CARD_B64), c => c.charCodeAt(0)), { headers: { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400' } }); }
         if (p === '/llms.txt') return new Response(A.llmsTxt(cfg), { headers: { 'content-type': 'text/plain' } });
         if (p === '/docs') return new Response(A.docsMd(cfg), { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
         if (p === '/robots.txt') return new Response('User-agent: *\nAllow: /\n', { headers: { 'content-type': 'text/plain' } });
         if (p === '/sitemap.xml') return new Response(A.sitemapXml(cfg), { headers: { 'content-type': 'application/xml' } });
+        if (p === '/__beacon') {
+            if (request.method !== 'POST') return json({ error: 'method' }, 405);
+            let body = {}; try { body = await request.json(); } catch {}
+            await recordAnalytics(kv, body, request.headers.get('cookie'));
+            return new Response('', { status: 204 });
+        }
         if (p === '/.well-known/x402') return json(A.wellKnown(cfg));
         if (p === '/.well-known/agent.json') return json(buildAgentMeta(cfg, A, url.origin));
         if (p === '/.well-known/glama.json') return json({ $schema: 'https://glama.ai/mcp/schemas/connector.json', maintainers: [{ email: cfg.CONTACT_EMAIL }] });
-        if (p === '/privacy') return html(A.renderLegal('Privacy Policy', cfg));
-        if (p === '/terms') return html(A.renderLegal('Terms of Service', cfg));
-        if (p === '/contact') return html(A.renderLegal('Contact & Abuse', cfg));
+        if (p === '/privacy') return htmlAn(A.renderLegal('Privacy Policy', cfg));
+        if (p === '/terms') return htmlAn(A.renderLegal('Terms of Service', cfg));
+        if (p === '/contact') return htmlAn(A.renderLegal('Contact & Abuse', cfg));
 
         if (p === '/mcp') return handleMcp(request, kv);
         if (p === '/v1/snapshot') {
@@ -486,7 +509,7 @@ export function createServer(A, cfg) {
         if (p === '/v1/admin/stats') {
             if ((request.headers.get('x-admin-key') || url.searchParams.get('key')) !== cfg.ADMIN_KEY) return json({ error: 'forbidden' }, 403);
             const days = parseInt(url.searchParams.get('days') || '7');
-            return json({ ok: true, telemetry: await readTelemetry(kv, days) });
+            return json({ ok: true, telemetry: await readTelemetry(kv, days), visitors: await readAnalytics(kv, days) });
         }
         return json({ error: 'not_found' }, 404);
     }
