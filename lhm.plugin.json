@@ -1,0 +1,119 @@
+{
+  "identifier": "contentforge-press-github-intel",
+  "name": "GitHub Repo Change Intelligence",
+  "version": "1.0.0",
+  "description": "Track public GitHub repos — releases, stars, issues, pushes. Free snapshot; paid change & momentum reports. Agents pay in USDC on Base via x402.",
+  "category": "productivity",
+  "homepage": "https://github.com/contentforge-press/github-repo-change-intelligence",
+  "cloudEndpoint": "https://s-github.pixharvest.com/mcp",
+  "icon": "⭐",
+  "tags": [
+    "github",
+    "repository",
+    "monitoring",
+    "release-tracking",
+    "stars",
+    "x402",
+    "usdc"
+  ],
+  "localizations": [
+    {
+      "locale": "zh-CN",
+      "name": "GitHub 仓库变化情报",
+      "description": "追踪公开 GitHub 仓库的 release、star、issue 与 push。免费快照；付费变化与增长报告。",
+      "tags": [
+        "github",
+        "仓库",
+        "监控",
+        "release",
+        "star",
+        "x402"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "repo_snapshot",
+      "description": "FREE. Current stars, forks, issues and latest release for one repo.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ]
+      }
+    },
+    {
+      "name": "repo_changes",
+      "description": "PAID ($0.05 USDC on Base via x402). New releases, star/issue deltas and pushes since last fetch.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ]
+      }
+    },
+    {
+      "name": "repo_intel_report",
+      "description": "PAID ($0.50 USDC on Base via x402). Trajectory and key-activity summary.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ]
+      }
+    },
+    {
+      "name": "repo_batch_scan",
+      "description": "PAID ($0.03 per repo USDC on Base via x402). Scan up to 50 repositories.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "targets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "owner/repo list"
+          }
+        },
+        "required": [
+          "targets"
+        ]
+      }
+    },
+    {
+      "name": "repo_landscape",
+      "description": "PAID ($5 USDC on Base via x402). Rank up to 10 repos on stars and growth.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "targets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "owner/repo list"
+          }
+        },
+        "required": [
+          "targets"
+        ]
+      }
+    }
+  ]
+}
