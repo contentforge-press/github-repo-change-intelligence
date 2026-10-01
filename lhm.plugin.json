@@ -1,7 +1,7 @@
 {
-  "identifier": "contentforge-press-github-intel",
+  "identifier": "contentforge-press-github-repo-change-intelligence",
   "name": "GitHub Repo Change Intelligence",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Track public GitHub repos — releases, stars, issues, pushes. Free snapshot; paid change & momentum reports. Agents pay in USDC on Base via x402.",
   "category": "productivity",
   "homepage": "https://github.com/contentforge-press/github-repo-change-intelligence",
