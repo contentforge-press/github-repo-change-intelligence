@@ -14,7 +14,7 @@ const cfg = {
     HOST: 'github-intel.contentforge-press.workers.dev',
     CONTACT_EMAIL: 'contentforge.press@outlook.com',
     ADMIN_KEY: 'ba951afdb936eecd4ffb9ddfb1b44b25f47bbab1dfc391ac',
-    MAIL_DOMAIN: 'mail.contentforge.press',
+    MAIL_DOMAIN: 'mail.pixharvest.com',
     // RESEND_API_KEY injected as Worker secret when available
 };
 

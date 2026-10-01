@@ -7,6 +7,37 @@ export const json = (data, status = 200, headers = {}) =>
 
 import { telemetry, readTelemetry } from './telemetry.js';
 
+// ERC-8004 / The Spawn 风格的机器可读 agent 元数据。
+// 不依赖链上 mint；indexer/agent/人可直接发现能力、端点与付费方式。
+export function buildAgentMeta(cfg, A, origin) {
+    const host = origin ? origin.replace(/^https?:\/\//, '') : cfg.HOST;
+    const base = origin || `https://${host}`;
+    const name = A.title || cfg.TITLE || cfg.NAME || 'Change Intelligence';
+    const longDesc = cfg.AGENT_DESCRIPTION ||
+        `${name} for autonomous AI agents. Free public snapshot of ${cfg.DOMAIN_LABEL || 'public targets'}; paid change detection, intel reports, batch scans and landscape reports. Paid calls settle USDC on Base via x402 (P2P, 0% commission). One access key works across the whole change-intelligence family. Free CLI quota, Hobby $9/mo and higher plans.`;
+    return {
+        name,
+        description: longDesc,
+        image: `${base}/favicon.png`,
+        x402Support: true,
+        payment: {
+            scheme: 'exact', network: 'eip155:8453', asset: cfg.USDC_BASE,
+            payTo: cfg.PAY_TO, facilitator: cfg.FACILITATOR,
+            pricing: {
+                changes: cfg.PRICE_CHANGES_USD, intel: cfg.PRICE_INTEL_USD,
+                batchPerTarget: cfg.PRICE_PER_TARGET_USD, landscape: cfg.PRICE_LANDSCAPE_USD,
+            },
+        },
+        services: [
+            { name: 'MCP', endpoint: `${base}/mcp`, version: '2025-06-18', description: `${name} — Streamable HTTP MCP with free and x402-paid tools.` },
+            { name: 'API', endpoint: `${base}/v1/cli`, description: 'CLI/agent endpoint: free anonymous quota, then x402 per call.' },
+            { name: 'x402', endpoint: `${base}/.well-known/x402`, description: 'Machine-readable payment requirements.' },
+            { name: 'web', endpoint: `${base}/`, description: 'Human docs, pricing, dashboard, demos.' },
+            { name: 'pricing', endpoint: `${base}/pricing`, description: 'Hobby $9, Pro $99, Business $499, Enterprise $2000 per month.' },
+        ],
+    };
+}
+
 const b64 = (o) => btoa(JSON.stringify(o));
 const b64decode = (s) => JSON.parse(atob(s));
 
@@ -131,15 +162,15 @@ async function watchView(A, kv, key, skv) {
     };
 }
 
-async function dispatchAlerts(A, cfg, wl, alerts) {
+async function dispatchAlerts(A, cfg, wl, alerts, env) {
     if (!alerts.length) return;
     if (wl.webhookUrl) for (const a of alerts) try {
         await fetch(wl.webhookUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: A.id, ...a }) });
     } catch {}
-    if (wl.alertEmail && cfg.RESEND_API_KEY) try {
+    if (wl.alertEmail && (cfg.RESEND_API_KEY || (env && env.RESEND_API_KEY))) try {
         const total = alerts.reduce((n, a) => n + a.changes.length, 0);
         await fetch('https://api.resend.com/emails', {
-            method: 'POST', headers: { authorization: 'Bearer ' + cfg.RESEND_API_KEY, 'content-type': 'application/json' },
+            method: 'POST', headers: { authorization: 'Bearer ' + (cfg.RESEND_API_KEY || env.RESEND_API_KEY), 'content-type': 'application/json' },
             body: JSON.stringify({ from: `${A.title} <alerts@${cfg.MAIL_DOMAIN || 'example.com'}>`, to: [wl.alertEmail], subject: `🔔 ${total} change(s) · ${A.title}`, html: A.emailHtml ? A.emailHtml(alerts) : JSON.stringify(alerts) }),
         });
     } catch {}
@@ -173,7 +204,7 @@ async function scheduledScan(A, cfg, env) {
                 const wl = await getWatch(kv, key); if (!wl.targets.length) continue;
                 const alerts = await refreshWatchlist(A, cfg, kv, wl);
                 await kv.put(`watch-${key}`, JSON.stringify(wl));
-                await dispatchAlerts(A, cfg, wl, alerts); refreshed++;
+                await dispatchAlerts(A, cfg, wl, alerts, env); refreshed++;
             } catch {}
         }
         cursor = l.cursor; if (scanned >= 500) break;
@@ -310,7 +341,7 @@ export function createServer(A, cfg) {
         const only = url.searchParams.get('target');
         const alerts = await refreshWatchlist(A, cfg, kv, wl, only);
         await kv.put(`watch-${key}`, JSON.stringify(wl));
-        await dispatchAlerts(A, cfg, wl, alerts);
+        await dispatchAlerts(A, cfg, wl, alerts, env);
         return json(await watchView(A, kv, key, skv));
     }
 
@@ -421,6 +452,7 @@ export function createServer(A, cfg) {
         if (p === '/robots.txt') return new Response('User-agent: *\nAllow: /\n', { headers: { 'content-type': 'text/plain' } });
         if (p === '/sitemap.xml') return new Response(A.sitemapXml(cfg), { headers: { 'content-type': 'application/xml' } });
         if (p === '/.well-known/x402') return json(A.wellKnown(cfg));
+        if (p === '/.well-known/agent.json') return json(buildAgentMeta(cfg, A, url.origin));
         if (p === '/.well-known/glama.json') return json({ $schema: 'https://glama.ai/mcp/schemas/connector.json', maintainers: [{ email: cfg.CONTACT_EMAIL }] });
         if (p === '/privacy') return html(A.renderLegal('Privacy Policy', cfg));
         if (p === '/terms') return html(A.renderLegal('Terms of Service', cfg));
