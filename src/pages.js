@@ -92,7 +92,7 @@ export function renderPricing(Plans) {
 <ul>${p.features.map(f => `<li>${f}</li>`).join('')}</ul>
 <button class="cta" data-plan="${p.id}">Choose ${p.name}</button></div>`).join('');
     return shell('Pricing · GitHub Repo Change Intelligence', `
-<h1 style="text-align:center">Plans &amp; pricing</h1><p class="sub" style="text-align:center">Billed in <b>USDC on Base</b> — no card.</p>
+<h1 style="text-align:center">Plans &amp; pricing</h1><p class="sub" style="text-align:center">Billed in <b>USDC on Base</b> — no card needed, or <a href="https://pixharvest.com/pricing" style="color:#9db8ff">pay by card at pixharvest.com</a> (9/9/99/mo) · <a href="mailto:contentforge.press@outlook.com" style="color:#9db8ff">email us</a>.</p>
 <div class="grid2">${cards}</div>
 <div class="card" id="paybox" style="display:none"></div>
 <p class="sub" style="text-align:center;margin-top:26px">Paying directly with USDC? No AI wallet needed — click a plan above, send the exact amount, your key is issued automatically.</p>
