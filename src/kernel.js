@@ -125,9 +125,11 @@ const PLANS = (A) => ({
 });
 
 // ---------- KV helpers ----------
-async function loadSub(kv, key) {
+async function loadSub(kv, key, skv) {
     if (!kv || !key) return null;
-    const raw = await kv.get(`sub-${key}`); if (!raw) return null;
+    let raw = await kv.get(`sub-${key}`);
+    if (!raw && skv) raw = await skv.get(`sub-${key}`);
+    if (!raw) return null;
     const sub = JSON.parse(raw); sub.active = new Date(sub.expiresAt).getTime() > Date.now(); return sub;
 }
 
@@ -152,10 +154,10 @@ async function bumpInstall(kv, installId, kind, win) {
 }
 
 // 付费门：识别 key（Hobby+）或匿名配额；否则给出引导
-async function gateCli(cfg, kv, request, url, kind, win) {
+async function gateCli(cfg, kv, request, url, kind, win, skv) {
     const key = url.searchParams.get('key');
     if (key) {
-        const sub = await loadSub(kv, key);
+        const sub = await loadSub(kv, key, skv);
         if (sub && sub.active) return { allow: true, sub };
         return { allow: false, reason: 'key_invalid' };
     }
@@ -396,7 +398,7 @@ export function createServer(A, cfg) {
     }
 
     // ---------- 免费 CLI：白嫖→撞墙→$9 矮台阶 ----------
-    async function handleCli(A, cfg, request, url, kv) {
+    async function handleCli(A, cfg, request, url, kv, skv) {
         const kind = url.searchParams.get('tool');
         const toolMap = { changes: 'repo_changes', intel: 'repo_intel_report', batch: 'repo_batch_scan', landscape: 'repo_landscape' };
         const def = A.mcpTools.find(t => t.name === toolMap[kind]);
@@ -419,19 +421,20 @@ export function createServer(A, cfg) {
         // 3) 带 x402 支付头 → 按次结算（AI 走这条，不受配额限）
         const payHdr = request.headers.get('X-PAYMENT') || '';
         if (!payHdr) {
-            const g = await gateCli(cfg, kv, request, url, kind);
+            const g = await gateCli(cfg, kv, request, url, kind, undefined, skv);
             if (!g.allow) {
                 const plansUrl = '/pricing';
-                return json({
-                    error: g.reason,
-                    upgrade: 'https://' + (cfg.HOST || url.host) + plansUrl,
-                    hobby: { id: 'hobby', price: 9, perks: 'unlimited CLI, no attribution' },
-                    used: g.used, quota: g.quota,
-                    valueDelivered: (g.wins || []).slice(-6),
-                    message: g.reason === 'quota_exceeded'
-                        ? `You've used this ${g.used} times in 30 days. Hobby ($9/month) unlocks unlimited calls and removes attribution.`
-                        : 'Add ?key=<accessKey> or ?install=<id>.',
-                }, 402);
+                const price = def.price(args);
+                const pay = await requirePaid(request, request.url, price, def.name, cfg);
+                const data = await pay.response.json();
+                data.upgrade = 'https://' + (cfg.HOST || url.host) + plansUrl;
+                data.hobby = { id: 'hobby', price: 9, perks: 'unlimited CLI, no attribution' };
+                data.used = g.used; data.quota = g.quota;
+                data.valueDelivered = (g.wins || []).slice(-6);
+                data.message = g.reason === 'quota_exceeded'
+                    ? `You've used this ${g.used} times in 30 days. Hobby ($9/month) unlocks unlimited calls and removes attribution.`
+                    : 'Settle USDC on Base via x402 and retry, or add ?key=<accessKey>.';
+                return new Response(JSON.stringify(data), { status: 402, headers: pay.response.headers });
             }
         } else {
             const price = def.price(args);
@@ -506,7 +509,7 @@ export function createServer(A, cfg) {
             return json(await checkDirectOrder(JSON.parse(raw), cfg, kv, A, skv));
         }
         if (p === '/v1/watch') return json(await watchView(A, kv, url.searchParams.get('key'), skv));
-        if (p === '/v1/cli') return handleCli(A, cfg, request, url, kv);
+        if (p === '/v1/cli') return handleCli(A, cfg, request, url, kv, skv);
         if (p === '/v1/watch/add') return watchAdd(url, request, kv, skv);
         if (p === '/v1/watch/remove') return watchRemove(url, request, kv, skv);
         if (p === '/v1/watch/settings') return watchSettings(url, request, kv, skv);

@@ -113,7 +113,7 @@ export const adapter = {
     safeHandle, parseTarget, fetchSnapshot, diff, kvKey,
     async snapshot(t) {
         const s = await fetchSnapshot(t);
-        return { platform: s.platform, target: s.handle, repo: s.meta.fullName, stars: s.meta.stars, openIssues: s.meta.openIssues, pushedAt: s.meta.pushedAt, latestReleases: s.items.slice(0, 5).map(x => ({ tag: x.tag, publishedAt: x.publishedAt })) };
+        return { platform: s.platform, target: s.handle, repo: s.meta.fullName, stars: s.meta.stars, openIssues: s.meta.openIssues, pushedAt: s.meta.pushedAt, latestReleases: s.items.slice(0, 5).map(x => ({ tag: x.tag, publishedAt: x.publishedAt })), upgrade: 'Full change report — $0.05 USDC (Base) via x402 — GET /v1/cli?tool=changes&target=' + s.handle };
     },
     planFeatures: {
         pro: ['Track up to 25 repositories', 'New release & prerelease alerts', 'Activity & archive watch', 'All paid MCP tools', 'Email + webhook'],
