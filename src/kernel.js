@@ -301,6 +301,20 @@ async function checkDirectOrder(order, cfg, kv, A, skv) {
 async function readJson(request) { try { return await request.json(); } catch { return {}; } }
 const html = (s) => new Response(s, { headers: { 'content-type': 'text/html; charset=utf-8' } });
 
+
+function buildMcpJson(cfg, A, origin) {
+    const base = origin || `https://${cfg.HOST}`;
+    const name = A.title || cfg.TITLE || cfg.NAME || 'Change Intelligence';
+    return {
+        servers: [{
+            name,
+            description: (cfg.AGENT_DESCRIPTION || `${name} for autonomous AI agents. Free public snapshot; paid intel, batch scans and landscape reports via x402 (USDC on Base).`),
+            url: `${base}/mcp`,
+            transport: 'streamable-http',
+        }],
+    };
+}
+
 export function createServer(A, cfg) {
     const Plans = PLANS(A);
 
@@ -485,6 +499,7 @@ export function createServer(A, cfg) {
         if (p === '/.well-known/x402') return json(A.wellKnown(cfg));
         if (p === '/.well-known/agent.json') return json(buildAgentMeta(cfg, A, url.origin));
         if (p === '/.well-known/glama.json') return json({ $schema: 'https://glama.ai/mcp/schemas/connector.json', maintainers: [{ email: cfg.CONTACT_EMAIL }] });
+        if (p === '/.well-known/mcp.json') return json(buildMcpJson(cfg, A, url.origin));
         if (p === '/privacy') return htmlAn(A.renderLegal('Privacy Policy', cfg));
         if (p === '/terms') return htmlAn(A.renderLegal('Terms of Service', cfg));
         if (p === '/contact') return htmlAn(A.renderLegal('Contact & Abuse', cfg));
