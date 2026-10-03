@@ -474,7 +474,7 @@ export function createServer(A, cfg) {
         if (p === '/card.png') { const { CARD_B64 } = await import('./trust.js'); return new Response(Uint8Array.from(atob(CARD_B64), c => c.charCodeAt(0)), { headers: { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400' } }); }
         if (p === '/llms.txt') return new Response(A.llmsTxt(cfg), { headers: { 'content-type': 'text/plain' } });
         if (p === '/docs') return new Response(A.docsMd(cfg), { headers: { 'content-type': 'text/markdown; charset=utf-8' } });
-        if (p === '/robots.txt') return new Response('User-agent: *\nAllow: /\n', { headers: { 'content-type': 'text/plain' } });
+        if (p === '/robots.txt') return new Response('User-agent: *\nAllow: /\n\nUser-agent: GPTBot\nAllow: /\n\nUser-agent: ClaudeBot\nAllow: /\n\nUser-agent: PerplexityBot\nAllow: /\n\nUser-agent: Google-Extended\nAllow: /\nSitemap: https://s-github.pixharvest.com/sitemap.xml\n', { headers: { 'content-type': 'text/plain' } });
         if (p === '/sitemap.xml') return new Response(A.sitemapXml(cfg), { headers: { 'content-type': 'application/xml' } });
         if (p === '/__beacon') {
             if (request.method !== 'POST') return json({ error: 'method' }, 405);
