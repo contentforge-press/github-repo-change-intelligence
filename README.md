@@ -73,7 +73,7 @@ Get a key from the [pricing page](https://s-github.pixharvest.com/pricing), then
 curl "https://s-github.pixharvest.com/v1/snapshot?target=REPLACE_TARGET"
 
 # paid call — returns 402 with the x402 challenge
-curl -i "https://s-github.pixharvest.com/v1/changes?target=REPLACE_TARGET"
+curl -i "https://s-github.pixharvest.com/v1/cli?tool=changes&target=REPLACE_TARGET"
 ```
 
 ## Links
